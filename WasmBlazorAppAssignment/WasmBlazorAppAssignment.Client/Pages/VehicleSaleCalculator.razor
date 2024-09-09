@@ -1,0 +1,257 @@
+﻿@page "/vehiclesalecalculator"
+@inject HttpClient Http
+@inject IJSRuntime JS
+@using WasmBlazorAppAssignment.Shared.Enums;
+@using WasmBlazorAppAssignment.Shared.Entities;
+@rendermode @(new InteractiveWebAssemblyRenderMode(prerender: false))
+
+<Card Style="width:100%;">
+    <CardBody>
+
+        <div class="d-flex align-items-center justify-content-between">
+            <CardTitle>Vehicle Sale Profits Calculator</CardTitle>
+            <div class="d-flex align-items-center">
+                <div class="vr me-2"></div>
+                <b class="me-2">ABC Automotive</b>
+                <Icon Name="IconName.CarFront" />
+            </div>
+        </div>
+        <hr />
+
+        <h5>Selling Season</h5>
+
+        <div class="d-flex py-1 align-items-center">
+            <label class="col-md-1 col-form-label">Start date:</label>
+            <DateInput TValue="DateTime?" @bind-Value="@sellingSeasonStart" />
+        </div>
+
+        <div class="d-flex py-1 align-items-center">
+            <label class="col-md-1 col-form-label">End date:</label>
+            <DateInput TValue="DateTime?" @bind-Value="@sellingSeasonEnd" />
+        </div>
+
+        <div class="d-flex py-1 align-items-center">
+            <label class="col-md-1 col-form-label">Date car sold:</label>
+            <DateInput TValue="DateTime?" @bind-Value="@carSoldDate" />
+        </div>
+
+        <div class="d-flex py-2 align-items-center">
+            <Button Color="ButtonColor.Primary" @onclick="ApplyDates">Apply Dates</Button>
+            <p class="text-danger ms-3 mb-0" style="font-size: 0.875rem; font-style: italic;">@((MarkupString)errorMessage)</p>
+        </div>
+
+        @if (isLoading)
+        {
+            <div class="spinner-border text-primary" role="status">
+                <span class="visually-hidden">Loading...</span>
+            </div>
+        }
+        else
+        {
+            <div class="table-responsive mt-3">
+                <table class="table table-hover table-bordered table-striped mt-3">
+                    <thead>
+                        <tr>
+                            <th>Id</th>
+                            <th>Make</th>
+                            <th>Model</th>
+                            <th>Colour</th>
+                            <th>Classification</th>
+                            <th>Cost</th>
+                            <th>MSRP</th>
+                            <th>Calculated Price</th>
+                            <th>Commission</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var vehicle in vehicleSaleDetailsList)
+                        {
+                            <tr>
+                                <td>@vehicle.Id</td>
+                                <td>@vehicle.Make</td>
+                                <td>@vehicle.Model</td>
+                                <td>@vehicle.Colour</td>
+                                <td>@vehicle.Classification</td>
+                                <td>@vehicle.Cost.ToString("C0")</td>
+                                <td>@vehicle.MSRP.ToString("C0")</td>
+                                @if (datesAreValid)
+                                {
+                                    double commission;
+                                    double calculatedPrice = CalculateVehiclePrice(vehicle, out commission);
+                                    <td>@calculatedPrice.ToString("C2")</td>
+                                    <td>@commission.ToString("C2")</td>                            
+                               }
+                                else
+                                {
+                                    <td><span style="font-size: 0.8em; font-style: italic;">Price will be displayed after entering valid dates</span></td>
+                                    <td><span style="font-size: 0.8em; font-style: italic;">Commission will be displayed after entering valid dates</span></td>
+                                }
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </CardBody>
+</Card>
+
+@code {
+    private DateTime? sellingSeasonStart;
+    private DateTime? sellingSeasonEnd;
+    private DateTime? carSoldDate;
+    private bool datesAreValid = false;
+    private bool isLoading = true;
+    private string errorMessage = "";
+    private int weeksSinceSellingSeason;
+    private double comissionPercent = 0.0125;
+
+    private List<VehicleSaleDetails> vehicleSaleDetailsList = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Retrieve dates from session storage
+        var sessionStart = await JS.InvokeAsync<string>("sessionStorage.getItem", "sellingSeasonStart");
+        var sessionEnd = await JS.InvokeAsync<string>("sessionStorage.getItem", "sellingSeasonEnd");
+        var sessionSoldDate = await JS.InvokeAsync<string>("sessionStorage.getItem", "carSoldDate");
+
+        if (!string.IsNullOrEmpty(sessionStart) && DateTime.TryParse(sessionStart, out var parsedStart))
+        {
+            sellingSeasonStart = parsedStart;
+        }
+        if (!string.IsNullOrEmpty(sessionEnd) && DateTime.TryParse(sessionEnd, out var parsedEnd))
+        {
+            sellingSeasonEnd = parsedEnd;
+        }
+        if (!string.IsNullOrEmpty(sessionSoldDate) && DateTime.TryParse(sessionSoldDate, out var parsedSoldDate))
+        {
+            carSoldDate = parsedSoldDate;
+        }
+
+        // Fetch vehicle sale details
+        await LoadVehicleSaleDetails();
+
+        // If dates are already set, validate them
+        if (sellingSeasonStart.HasValue && sellingSeasonEnd.HasValue && carSoldDate.HasValue)
+        {
+            ApplyDates();
+        }
+        isLoading = false;
+    }
+
+    private async Task LoadVehicleSaleDetails()
+    {
+        try
+        {
+            var result = await Http.GetFromJsonAsync<List<VehicleSaleDetails>>("api/vehiclesaledetails");
+            if (result is not null)
+            {
+                vehicleSaleDetailsList = result;
+            }
+        }
+        catch (Exception ex)
+        {
+            // Handle error
+            errorMessage = $"Failed to load vehicle details: {ex.Message}";
+        }
+    }
+
+    public void ApplyDates()
+    {
+        if (ValidateUserDates())
+        {
+            weeksSinceSellingSeason = (int)Math.Max(0, Math.Floor((carSoldDate.Value - sellingSeasonEnd.Value).TotalDays / 7));
+
+            // Store dates in session storage
+            JS.InvokeVoidAsync("sessionStorage.setItem", "sellingSeasonStart", sellingSeasonStart.Value.ToString("o"));
+            JS.InvokeVoidAsync("sessionStorage.setItem", "sellingSeasonEnd", sellingSeasonEnd.Value.ToString("o"));
+            JS.InvokeVoidAsync("sessionStorage.setItem", "carSoldDate", carSoldDate.Value.ToString("o"));
+
+            datesAreValid = true;
+        } else
+        {
+            datesAreValid = false;
+        }
+    }
+
+    public bool ValidateUserDates()
+    {
+        errorMessage = "";
+
+        // Validate dates
+        if (!sellingSeasonStart.HasValue) errorMessage = "Selling season start is missing<br>";
+        if (!sellingSeasonEnd.HasValue) errorMessage += "Selling season end is missing<br>";
+
+        if (sellingSeasonStart > sellingSeasonEnd && sellingSeasonStart.HasValue && sellingSeasonEnd.HasValue)
+            errorMessage = "Selling season start date cannot be later than the end date<br>";
+
+        if (!carSoldDate.HasValue) errorMessage += "Given day is missing<br>";
+
+        if (errorMessage != "")
+        {
+            errorMessage = "<br><b>Errors detected</b> <br>" + errorMessage;
+            return false;
+        }
+        else
+        {
+            return true;
+        }
+    }
+
+    public double CalculateVehiclePrice(VehicleSaleDetails carDetails, out double commission)
+    {
+        double calculatedPrice = carDetails.MSRP;
+        commission = 0;
+
+
+        // Conditions to exclude from price increase/decreases
+        if (carSoldDate < sellingSeasonStart ||
+            (carSoldDate >= sellingSeasonStart && carSoldDate <= sellingSeasonEnd) ||
+            carDetails.Classification == VehicleClassification.Convertible)
+        {
+            commission = calculatedPrice * comissionPercent;
+            return calculatedPrice;
+        }
+
+        double discount = 0;
+        // If a normal car
+        if (carDetails.Classification == VehicleClassification.Sedan)
+        {
+            if (carDetails.Colour == "Red")
+            {
+                discount = (.02 * weeksSinceSellingSeason);
+            }
+            else
+            {
+                discount = (.04 * weeksSinceSellingSeason);
+            }
+        }
+        else if (carDetails.Classification == VehicleClassification.SUV)
+        {
+            discount = (-.05 * weeksSinceSellingSeason);
+        }
+
+        calculatedPrice = carDetails.MSRP * (1 - discount);
+
+        // Calculate commission before checking for a loss
+
+        // If selling for a loss, set to cost + commission
+        if (calculatedPrice < carDetails.Cost + commission)
+        {
+            commission = carDetails.Cost * comissionPercent;
+            calculatedPrice = carDetails.Cost + commission;
+
+        } else
+        {
+            commission = calculatedPrice * comissionPercent;
+        }
+
+        return calculatedPrice;
+    }
+
+    public double CalculateCommission(VehicleSaleDetails carDetails)
+    {
+        // Calculate the price and commission at the same time to avoid discrepancies
+        CalculateVehiclePrice(carDetails, out double commission);
+        return commission;
+    }
+}
